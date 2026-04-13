@@ -16,7 +16,6 @@ type Client struct {
 
 // NewClient creates a new Ghost API client
 func NewClient(apiURL, apiKey string) *Client {
-
 	return &Client{
 		apiURL: strings.TrimPrefix(apiURL, "https://"),
 		apiKey: apiKey,
@@ -24,31 +23,57 @@ func NewClient(apiURL, apiKey string) *Client {
 	}
 }
 
-// FetchPosts retrieves all posts from the Ghost API
+// FetchPosts retrieves all posts from the Ghost API, using pagination
 func (c *Client) FetchPosts() ([]Post, error) {
-	url := fmt.Sprintf("https://%s/ghost/api/content/posts/?key=%s", c.apiURL, c.apiKey)
+	var allPosts []Post
+	page := 1
+	limit := 100 // Max allowed by Ghost API
 
-	resp, err := c.http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch posts: %w", err)
+	for {
+		url := fmt.Sprintf("https://%s/ghost/api/content/posts/?key=%s&page=%d&limit=%d", c.apiURL, c.apiKey, page, limit)
+
+		resp, err := c.http.Get(url)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch posts: %w", err)
+		}
+		defer resp.Body.Close()
+
+		var result struct {
+			Posts  []Post     `json:"posts,omitempty"`
+			Meta   PostMeta   `json:"meta,omitempty"`
+			Errors []APIError `json:"errors,omitempty"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+
+		if len(result.Errors) > 0 {
+			return nil, fmt.Errorf("API error: %s (code: %s)",
+					       result.Errors[0].Message,
+			  result.Errors[0].Code,
+			)
+		}
+
+		if len(result.Posts) == 0 {
+			break
+		}
+
+		allPosts = append(allPosts, result.Posts...)
+		page++
 	}
-	defer resp.Body.Close()
 
-	var result struct {
-		Posts  []Post     `json:"posts,omitempty"`
-		Errors []APIError `json:"errors,omitempty"`
-	}
+	return allPosts, nil
+}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if len(result.Errors) > 0 {
-		return nil, fmt.Errorf("API error: %s (code: %s)",
-			result.Errors[0].Message,
-			result.Errors[0].Code,
-		)
-	}
-
-	return result.Posts, nil
+// PostMeta contains pagination info from the Ghost API
+type PostMeta struct {
+	Pagination struct {
+		Page  int `json:"page"`
+		Limit int `json:"limit"`
+		Pages int `json:"pages"`
+		Total int `json:"total"`
+		Next  int `json:"next,omitempty"`
+		Prev  int `json:"prev,omitempty"`
+	} `json:"pagination"`
 }
